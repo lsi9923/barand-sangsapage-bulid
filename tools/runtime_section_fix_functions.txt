@@ -1,0 +1,195 @@
+def _generate_section_visuals(
+    self,
+    product,
+    sections,
+    run_stamp,
+    page=None,
+    resume_from_section=None,
+    progress_callback=None,
+):
+    prompt_dir = product.output_dir / "codex_image_prompts"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    visual_dir = product.output_dir / "generated_visuals"
+    visual_dir.mkdir(parents=True, exist_ok=True)
+
+    explicit_manual_resume = bool(getattr(self, "active_manual_resume_request", None))
+    run_token = f"{product.output_dir}|{run_stamp}"
+    run_tokens = getattr(self, "_section_visual_run_tokens", None)
+    if not isinstance(run_tokens, set):
+        run_tokens = set()
+        self._section_visual_run_tokens = run_tokens
+    first_automatic_call = not explicit_manual_resume and run_token not in run_tokens
+    if first_automatic_call:
+        run_tokens.add(run_token)
+        resume_from_section = None
+
+    if resume_from_section is None:
+        for old_file in prompt_dir.glob("section_*"):
+            if old_file.is_file():
+                old_file.unlink(missing_ok=True)
+    if first_automatic_call:
+        for old_file in visual_dir.glob("section_*.png"):
+            if old_file.is_file():
+                old_file.unlink(missing_ok=True)
+
+    existing_pipeline_version = ""
+    metadata_path = product.output_dir / "metadata.json"
+    if metadata_path.exists():
+        try:
+            existing_pipeline_version = str(
+                json.loads(metadata_path.read_text(encoding="utf-8")).get("pipeline_version", "")
+            )
+        except Exception:
+            existing_pipeline_version = ""
+    force_regenerate = existing_pipeline_version != DETAIL_PIPELINE_VERSION
+    for old_file in visual_dir.glob("section_*.png"):
+        if old_file.is_file() and (
+            (force_regenerate and resume_from_section is None)
+            or not self._is_valid_generated_visual_file(old_file)
+        ):
+            old_file.unlink(missing_ok=True)
+
+    source_path = self._best_reference_image_path(product)
+    if source_path is None:
+        source_paths = self._source_image_paths(product)
+        source_path = source_paths[0] if source_paths else None
+    if source_path is None:
+        raise RuntimeError("섹션 이미지를 만들 상품 원본 이미지가 없습니다.")
+    self._write_latest_imagegen_batch_files(product, sections, prompt_dir, visual_dir, source_path)
+    if page is not None:
+        if not ENABLE_CHATGPT_WEB_IMAGE_GENERATION:
+            return []
+        return self._run_chatgpt_web_section_image_generation(
+            product,
+            sections,
+            prompt_dir,
+            visual_dir,
+            page,
+            resume_from_section=resume_from_section,
+            progress_callback=progress_callback,
+        )
+    return self._run_gpt_image2_section_generation(
+        product,
+        sections,
+        prompt_dir,
+        visual_dir,
+        resume_from_section=resume_from_section,
+        progress_callback=progress_callback,
+    )
+
+
+def _chatgpt_section_image_request(
+    self,
+    product,
+    section,
+    section_index,
+    retry_variant=0,
+):
+    section_prompt = self._section_image_prompt_context(section, section_index)
+    if not section_prompt or len(section_prompt) < 30:
+        raise RuntimeError(f"{section_index:02d}번 섹션의 GPT 섹션 실행본이 없습니다.")
+
+    scene_contracts = (
+        "넓은 여백의 대표 히어로 구도, 상품 전체를 한 번에 보여주는 중거리 3/4 시점",
+        "고객의 사용 전 불편과 사용 맥락을 보여주는 현실적인 환경 중심 구도",
+        "상품이 문제를 해결하는 순간을 보여주는 동작 중심 구도",
+        "핵심 장점별로 화면을 나누되 상품 형태가 반복 복제되지 않는 편집 구도",
+        "소재·마감·결합부를 가까이 보여주는 매크로 디테일 구도",
+        "실제 사용 순서가 자연스럽게 읽히는 과정 중심 구도",
+        "품질과 구조를 확인하는 절제된 밝은 스튜디오 검수 구도",
+        "색상·사이즈·구성 차이를 정확하게 비교하는 옵션 배열 구도",
+        "구매 전 확인 항목을 실제 제품과 함께 정돈한 체크 구도",
+        "상품 전체를 다시 보여주되 앞선 섹션과 다른 거리·각도의 차분한 마무리 구도",
+    )
+    try:
+        scene_contract = scene_contracts[(max(1, int(section_index)) - 1) % len(scene_contracts)]
+    except (TypeError, ValueError):
+        scene_contract = scene_contracts[0]
+    retry_notes = (
+        "첫 생성 요청. 섹션 역할에 맞는 고유한 장면을 사용.",
+        "재시도 1: 직전 결과와 카메라 거리, 제품 위치, 배경 공간, 조명을 모두 변경.",
+        "재시도 2: 직전 결과와 다른 실내·실외 맥락 또는 다른 표면을 선택하고 제품 배열도 변경.",
+        "재시도 3: 앞선 결과를 재사용하지 말고 완전히 새로운 레이아웃으로 다시 구성.",
+    )
+    retry_note = retry_notes[min(max(0, int(retry_variant or 0)), len(retry_notes) - 1)]
+    base_prompt = self._latest_image_prompt_for_section(product, section, section_index, None)
+    brand_logo_rule = self._brand_logo_prompt_instruction()
+    return (
+        f"{base_prompt}\n\n"
+        "실제 웹 이미지 생성용 섹션 차별화 계약:\n"
+        f"- 이번 섹션 전용 배경 연출: {scene_contract}\n"
+        f"- {retry_note}\n"
+        "- 이전 섹션과 동일하거나 지나치게 비슷한 배경, 카메라 거리, 상품 배치, 소품 배열, 조명을 사용하지 말 것.\n"
+        "- 앞선 섹션 이미지를 복사하거나 부분 수정한 결과가 아니라 이번 섹션 목적에 맞는 새 장면으로 생성할 것.\n"
+        f"{brand_logo_rule}"
+    )
+
+
+def _build_product_fallback_sections(self, product):
+    raise RuntimeError(
+        "GPT 기획 섹션 1~10을 확인하지 못했습니다. "
+        "첫 ChatGPT 기획 응답을 다시 받아야 하며 내부 기본 섹션으로 진행하지 않습니다."
+    )
+
+
+def _is_valid_generated_visual_file(self, path):
+    if not self._is_valid_image_file(path):
+        return False
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+            if width < 700 or height < 700:
+                return False
+            current_gray = image.convert("L").resize((17, 16))
+            current_pixels = list(current_gray.getdata())
+            current_dhash = tuple(
+                current_pixels[row * 17 + col] > current_pixels[row * 17 + col + 1]
+                for row in range(16)
+                for col in range(16)
+            )
+            current_small = image.convert("L").resize((16, 16))
+            current_values = list(current_small.getdata())
+            current_mean = sum(current_values) / max(1, len(current_values))
+            current_ahash = tuple(value >= current_mean for value in current_values)
+
+        if path.parent.name != "generated_visuals" or not path.name.startswith("section_"):
+            return True
+        try:
+            current_index = int(path.name[8:10])
+        except (TypeError, ValueError):
+            return True
+        for candidate in path.parent.glob("section_*.png"):
+            if candidate == path or not candidate.is_file():
+                continue
+            try:
+                candidate_index = int(candidate.name[8:10])
+            except (TypeError, ValueError):
+                continue
+            if candidate_index >= current_index:
+                continue
+            try:
+                with Image.open(candidate) as other:
+                    if other.width < 700 or other.height < 700:
+                        continue
+                    other_gray = other.convert("L").resize((17, 16))
+                    other_pixels = list(other_gray.getdata())
+                    other_dhash = tuple(
+                        other_pixels[row * 17 + col] > other_pixels[row * 17 + col + 1]
+                        for row in range(16)
+                        for col in range(16)
+                    )
+                    other_small = other.convert("L").resize((16, 16))
+                    other_values = list(other_small.getdata())
+                    other_mean = sum(other_values) / max(1, len(other_values))
+                    other_ahash = tuple(value >= other_mean for value in other_values)
+            except Exception:
+                continue
+            dhash_distance = sum(left != right for left, right in zip(current_dhash, other_dhash))
+            ahash_distance = sum(left != right for left, right in zip(current_ahash, other_ahash))
+            if dhash_distance <= 10 and ahash_distance <= 14:
+                return False
+        return True
+    except Exception:
+        return False

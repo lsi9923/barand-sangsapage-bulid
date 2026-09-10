@@ -1,0 +1,25 @@
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from hashlib import sha256
+
+def sanitize_text(value):
+    def redact(match):
+        try:
+            parts = urlsplit(match.group(0))
+            hidden = {'token','access_token','auth','signature','sig','password','api_key','apikey','key','secret','session','sessionid'}
+            query = [(k,v) for k,v in parse_qsl(parts.query,keep_blank_values=True) if k.lower() not in hidden]
+            host = parts.hostname or ''
+            if ':' in host:
+                host = '[' + host + ']'
+            if parts.port:
+                host += ':' + str(parts.port)
+            return urlunsplit((parts.scheme,host,parts.path,urlencode(query),''))
+        except ValueError:
+            return '[잘못된 URL]'
+    return re.sub(r'https?://[^\s<>"\x27]+',redact,str(value),flags=re.IGNORECASE)
+
+def sanitize_evidence(value):
+    if isinstance(value,dict):
+        return {k:sanitize_evidence(v) for k,v in value.items()}
+    if isinstance(value,list):
+        return [sanitize_evidence(v) for v in value]
+    return sanitize_text(value) if isinstance(value,str) else value

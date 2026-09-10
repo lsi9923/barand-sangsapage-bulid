@@ -1,0 +1,22 @@
+{
+  "base": "C:\\Users\\SANGAH\\Desktop\\상세페이지 자동화 GUI - 로고상품 프롬프트폴더.exe",
+  "base_sha256": "2ecdb8748ec084388bcb2a9e9c12a024d75090762648b01ae38efa0a1b365141",
+  "target": "C:\\Users\\SANGAH\\Documents\\Codex\\2026-05-19\\lsi9923-manus-sangsapage-git-https-github\\.work\\github-publish\\dist\\상세페이지 전문가 업그레이드 - 배포용.exe",
+  "target_sha256": "d7a5dc653150a21498a1328abdc74d15ec9b8faccb3036f7fd7db00eaeb8129c",
+  "changed_methods": [
+    "send_coupang_manual_gpt_prompt",
+    "_build_naver_market_chatgpt_prompt",
+    "_build_coupang_market_chatgpt_prompt",
+    "_ensure_cdp_browser",
+    "_system_browser_executable_path",
+    "_build_gpt_section_plan_request",
+    "_submit_section_plan_request",
+    "_detail_section_common_design_rules",
+    "_generate_thumbnail_images",
+    "_scrape_product_page",
+    "_scrape_1688_source",
+    "_migrate_legacy_config_file"
+  ],
+  "isolated_config": "SangsapageExpertPreview",
+  "isolated_output": "상세페이지_전문가_테스트_결과"
+}

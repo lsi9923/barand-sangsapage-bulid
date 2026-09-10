@@ -1,0 +1,91 @@
+def _latest_image_prompt_for_section(self, product, section, section_index, source_path):
+    section_prompt = self._section_image_prompt_context(section, section_index)
+    if not section_prompt:
+        raise RuntimeError(f"{section_index:02d}번 섹션의 GPT 섹션 실행본이 없습니다.")
+    extra_prompt_block = self._additional_prompt_block("상세페이지 섹션 이미지")
+    prompt_override_block = self._section_image_prompt_override_block(section_index)
+    identity_lock_block = self._product_identity_lock_prompt(product)
+
+    product_name = str(
+        getattr(product, "product_name", "")
+        or getattr(product, "title", "")
+        or getattr(product, "code", "")
+        or "선택 상품"
+    ).strip()
+    category = str(getattr(product, "category", "") or "").strip() or "상품 정보에 맞는 실제 사용 환경"
+    section_role = str(
+        getattr(section, "section_name", "")
+        or getattr(section, "section_key", "")
+        or f"섹션 {section_index}"
+    ).strip()
+    scene_profiles = (
+        "상품 전체가 첫눈에 들어오는 여백 있는 대표 장면",
+        "고객이 겪는 상황을 과장 없이 보여주는 실제 사용 맥락",
+        "소재·마감·구조를 가까이 확인하는 정밀 디테일 장면",
+        "핵심 기능이 작동하는 순간을 명확히 보여주는 시연 장면",
+        "상품 용도에 맞는 생활 공간에서 자연스럽게 사용하는 장면",
+        "크기·옵션·구성 차이를 한눈에 비교하기 좋은 정돈된 장면",
+        "사용 순서와 편의성이 자연스럽게 이어지는 과정 중심 장면",
+        "내구성·마감·결합부를 신뢰감 있게 보여주는 품질 확인 장면",
+        "제품 색상과 형태가 실제 공간에 어울리는 스타일링 장면",
+        "상품 전체와 핵심 장점을 차분하게 마무리하는 구매 결정 장면",
+    )
+    try:
+        profile_index = max(0, int(section_index) - 1) % len(scene_profiles)
+    except (TypeError, ValueError):
+        profile_index = 0
+    scene_profile = scene_profiles[profile_index]
+    palette_seed = sum(ord(char) for char in f"{product_name}|{category}|{section_role}")
+    lighting_profiles = (
+        "부드러운 자연광과 실제 소재색을 살리는 중립 화이트 밸런스",
+        "형태와 깊이가 또렷한 확산광, 절제된 그림자",
+        "표면 질감이 살아나는 측면광, 과장 없는 명암",
+        "용도에 맞는 생활광, 제품 색을 왜곡하지 않는 노출",
+    )
+    background_profiles = (
+        "실제 사용 공간을 넓고 차분하게 담는 라이프스타일 배경",
+        "상품 소재와 어울리는 표면을 중심으로 한 촉감형 배경",
+        "사용 동선과 제품 위치가 자연스럽게 연결되는 생활 배경",
+        "제품 색을 살리는 절제된 한국 쇼핑몰 에디토리얼 배경",
+        "기능과 구조가 선명하게 보이는 정돈된 건축형 배경",
+        "주변 사물을 최소화한 밝고 실용적인 커머스 배경",
+        "사용자의 손과 동작이 자연스럽게 이어지는 행동형 배경",
+        "소재의 온도감과 계절감을 은은하게 살린 감성 배경",
+        "상품 크기와 비율을 판단하기 쉬운 현실적인 공간 배경",
+        "제품의 형태와 그림자를 살리는 조형적인 스튜디오 배경",
+        "카테고리의 실제 구매 상황을 반영한 담백한 생활 배경",
+    )
+    lighting = lighting_profiles[(palette_seed + profile_index) % len(lighting_profiles)]
+    background_profile = background_profiles[
+        (palette_seed + profile_index * 3) % len(background_profiles)
+    ]
+    background_direction = (
+        "이번 섹션 전용 배경 연출:\n"
+        f"- 제품: {product_name}\n"
+        f"- 상품군/용도 단서: {category}\n"
+        f"- 섹션 역할: {section_role}\n"
+        f"- 장면 방향: {scene_profile}\n"
+        f"- 배경 성격: {background_profile}\n"
+        f"- 조명 방향: {lighting}\n"
+        "- 제품의 실제 용도와 소재에 어울리는 공간·바닥/표면·소품을 선택하되, 상품 정보에서 확인되지 않는 용도는 만들지 말 것.\n"
+        "- 같은 상품의 다른 섹션과 배경 공간, 표면, 조명, 카메라 거리, 소품 구성을 반복하지 말 것.\n"
+        "- 배경이 제품보다 튀거나 제품 형태를 가리지 않게 하고, 흔한 동일 스튜디오 템플릿을 돌려 쓰지 말 것."
+    )
+
+    return (
+        "상세페이지 섹션 이미지 1장 생성.\n"
+        "설명 없이 이미지 결과만 출력.\n"
+        "첨부 이미지들의 실제 상품 외형, 색상, 단수, 구조, 비율을 유지.\n\n"
+        "사람이 포함된 참고 이미지가 있을 경우, 상품의 착용 핏/자세/사용 장면은 유지하되\n"
+        "사람 얼굴과 개인 식별 특징은 원본과 다르게 변경해,\n"
+        "원본 인물로 식별되지 않게 처리.\n"
+        "원본 모델의 얼굴, 눈/코/입, 헤어라인, 점, 문신 등 신원 식별 요소를 그대로 복제하지 말고, "
+        "필요하면 얼굴이 보이지 않는 각도나 익명 모델 느낌으로 처리.\n"
+        "단, 상품 자체의 색상, 소재, 핏, 길이, 구조는 절대 바꾸지 않음.\n\n"
+        f"{self._detail_section_common_design_rules()}\n\n"
+        f"{background_direction}\n\n"
+        f"{identity_lock_block}\n"
+        f"{extra_prompt_block}\n"
+        f"{prompt_override_block}\n"
+        f"{section_prompt}"
+    )

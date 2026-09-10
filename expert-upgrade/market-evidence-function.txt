@@ -1,0 +1,39 @@
+platform = PLATFORM_LITERAL
+source = product.source if isinstance(product.source, dict) else {}
+metadata = product.metadata if isinstance(product.metadata, dict) else {}
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+def clean_url(raw):
+    parts = urlsplit(str(raw or ''))
+    hidden = {'token', 'access_token', 'auth', 'signature', 'sig', 'password'}
+    query = [(k,v) for k,v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() not in hidden]
+    host = parts.hostname or ''
+    if parts.port:
+        host += ':' + str(parts.port)
+    return urlunsplit((parts.scheme, host, parts.path, urlencode(query), ''))
+
+evidence = {
+    'platform': platform,
+    'source_urls': list(dict.fromkeys(clean_url(v) for v in [source.get('url'),metadata.get('url'),source.get('secondary_url'),metadata.get('secondary_url')] if v)),
+    'source_fields': {k:source[k] for k in ('product_name','title','category','price_text','options_text','option_rows','facts') if k in source},
+    'metadata_fields': {k:metadata[k] for k in ('product_name','category','price_text','options_text','saved_at') if k in metadata},
+    'generated_assets_are_not_spec_evidence': True,
+    'search_validation': '미실행: 이 함수는 검색 API를 호출하지 않음',
+}
+if platform == 'coupang':
+    fields = ('itemName','originalPrice','salePrice','maximumBuyCount','attributes','searchTags','notices','certifications','outboundShippingTimeDay')
+    evidence['all_options'] = [{k:item[k] for k in fields if k in item} for item in items if isinstance(item,dict)]
+    evidence['shipping'] = {k:payload[k] for k in ('deliveryMethod','deliveryChargeType','deliveryCharge','freeShipOverAmount','returnCharge','deliveryChargeOnReturn') if k in payload}
+    evidence['pricing'] = payload.get('_draft',{}).get('pricing',{}) if isinstance(payload.get('_draft'),dict) else {}
+    platform_rule = '쿠팡 전용: sellerProductName과 노출상품명, displayCategoryCode, items별 구매옵션/속성/가격/재고를 분리해 검수한다. 네이버 sellerTags/productAttributes를 쿠팡 필드로 변환해서 쓰지 않는다.'
+else:
+    evidence['all_options'] = option_info
+    evidence['pricing'] = {k:origin[k] for k in ('salePrice','stockQuantity') if k in origin}
+    evidence['shipping'] = origin.get('deliveryInfo',{})
+    evidence['product_info'] = {k:detail[k] for k in ('productInfoProvidedNotice','certificationInfos','originAreaInfo','afterServiceInfo') if k in detail}
+    platform_rule = '네이버 전용: name/leafCategoryId, seoInfo.pageTitle/metaDescription/sellerTags, productAttributes, optionInfo를 각각 검수한다. 태그 후보와 실제 등록 가능한 태그를 구분한다. 쿠팡 카테고리 코드/구매옵션을 네이버 값으로 복사하지 않는다.'
+evidence_text = json.dumps(evidence,ensure_ascii=False,indent=2)
+prompt = base_prompt + '\n[선택 상품의 원본 근거와 전체 옵션]\n' + evidence_text + '\n' + RULES_LITERAL + '\n' + platform_rule
+if len(prompt) > 80000:
+    raise ValueError('등록 프롬프트가 80,000자를 초과합니다. 옵션을 잘라 보내지 않았습니다. 상품 옵션 자료를 나눠 검수하세요.')
+return prompt
