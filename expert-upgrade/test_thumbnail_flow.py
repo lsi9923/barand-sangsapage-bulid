@@ -17,6 +17,7 @@ class ThumbnailFlowTests(unittest.TestCase):
         runtime_error = type('ThumbnailGenerationFailed',(RuntimeError,),{})
         env = {'Path':Path,'re':__import__('re'),'now_stamp':lambda:'TEST','REQUIRED_THUMBNAIL_IMAGE_COUNT':5,
                'CHATGPT_THUMBNAIL_IMAGE_RETRY_LIMIT':3,'CHATGPT_SECTION_PLAN_WAIT_TIMEOUT_SECONDS':210,
+               'CHATGPT_THUMBNAIL_ACTIVE_WAIT_EXTENSION_SECONDS':180,
                'CHATGPT_IMAGE_WAIT_TIMEOUT_SECONDS':180,'CHATGPT_WEB_IMAGE_MODEL':'web',
                'ThumbnailResult':lambda **kw:types.SimpleNamespace(**kw),'ThumbnailGenerationFailed':runtime_error,
                'AutomationStopRequested':type('AutomationStopRequested',(RuntimeError,),{}),

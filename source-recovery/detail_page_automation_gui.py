@@ -1216,7 +1216,28 @@ class DetailPageGui(QMainWindow):
         normalized = self._normalize_excel_header(value)
         if not normalized:
             return False
-        return "1688" in normalized or "중국" in normalized or "타오바오" in normalized or "alibaba" in normalized
+        if any(token in normalized for token in ("이미지", "사진", "썸네일", "thumbnail", "image", "img")):
+            return False
+        source_tokens = (
+            "1688",
+            "중국",
+            "타오바오",
+            "alibaba",
+            "도매",
+            "공급처",
+            "공급자",
+            "공급몰",
+            "소싱",
+            "판매처",
+            "원본상품",
+            "상품원본",
+            "참고상품",
+            "source",
+            "supplier",
+            "wholesale",
+            "productsource",
+        )
+        return any(token in normalized for token in source_tokens)
 
     def _is_1688_url(self, value: str) -> bool:
         lower = (value or "").lower()
@@ -9574,16 +9595,22 @@ class DetailPageGui(QMainWindow):
         if not expected_host:
             return None
         expected_root = ".".join(expected_host.split(".")[-2:])
-        for page in context.pages:
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return None
+        for page in pages:
             try:
+                if page is None or page.is_closed():
+                    continue
                 host = urllib.parse.urlparse(page.url or "").netloc.lower()
+                if not host:
+                    continue
+                root = ".".join(host.split(".")[-2:])
+                if root == expected_root:
+                    return page
             except Exception:
                 continue
-            if not host:
-                continue
-            root = ".".join(host.split(".")[-2:])
-            if root == expected_root:
-                return page
         return None
 
     def _ensure_cdp_browser(self) -> None:
@@ -9682,30 +9709,26 @@ class DetailPageGui(QMainWindow):
         return "메시지가 문자 인코딩이 깨져서" in body_head or "????" in body_head
 
     def _ensure_chatgpt_section_planner_page_alive(self, context, page=None):
-        candidates = []
-        if page is not None:
-            candidates.append(page)
-        candidates.extend(reversed(context.pages))
+        self._active_playwright_context = context
+        candidates = [page, getattr(self, "_chatgpt_image_generation_page", None)]
+        try:
+            candidates.extend(reversed(list(context.pages)))
+        except Exception:
+            pass
+        target_page = None
         for candidate in candidates:
             try:
-                if (
-                    candidate is not None
-                    and not candidate.is_closed()
-                    and self._is_chatgpt_section_planner_url(candidate.url)
-                    and not self._is_chatgpt_encoding_error_page(candidate)
-                ):
+                if candidate is None or candidate.is_closed() or "chatgpt.com" not in (candidate.url or "").lower():
+                    continue
+                if self._is_chatgpt_section_planner_url(candidate.url) and not self._is_chatgpt_encoding_error_page(candidate):
                     self._accept_chatgpt_cookies(candidate)
                     if not self._page_needs_login(candidate):
                         candidate.bring_to_front()
                         return candidate
+                target_page = target_page or candidate
             except Exception:
                 continue
-
-        target_page = page
-        try:
-            if target_page is None or target_page.is_closed():
-                target_page = context.new_page()
-        except Exception:
+        if target_page is None:
             target_page = context.new_page()
         target_page.goto(GPT_URL, wait_until="domcontentloaded", timeout=60000)
         target_page.wait_for_timeout(5000)
@@ -10051,39 +10074,59 @@ class DetailPageGui(QMainWindow):
         allow_retry: bool = True,
         product: ProductRecord | None = None,
     ) -> str:
-        self._ensure_chatgpt_section_planner_page(page)
-        self._accept_chatgpt_cookies(page)
-        if self._page_needs_login(page):
-            raise RuntimeError("ChatGPT 로그인이 필요합니다.")
-        previous_text, busy = self._latest_gpt_text(page)
-        reusable_text = self._find_reusable_gpt_plan_on_page(page, prompt, product)
-        if reusable_text:
-            return reusable_text
-        if self._can_reuse_existing_gpt_plan(previous_text, prompt):
-            return previous_text
+        try:
+            self._ensure_chatgpt_section_planner_page(page)
+            self._accept_chatgpt_cookies(page)
+            if self._page_needs_login(page):
+                raise RuntimeError("ChatGPT 로그인이 필요합니다.")
+            previous_text, busy = self._latest_gpt_text(page)
+            reusable_text = self._find_reusable_gpt_plan_on_page(page, prompt, product)
+            if reusable_text:
+                return reusable_text
+            if self._can_reuse_existing_gpt_plan(previous_text, prompt):
+                return previous_text
 
-        if busy:
+            if busy:
+                return self._wait_for_gpt_section_plan_detection(
+                    page,
+                    previous_text=previous_text,
+                    timeout_seconds=CHATGPT_SECTION_PLAN_WAIT_TIMEOUT_SECONDS,
+                )
+
+            self._wait_for_gpt_idle(page, timeout_seconds=CHATGPT_SECTION_PLAN_WAIT_TIMEOUT_SECONDS)
+            previous_text, _ = self._latest_gpt_text(page)
+            reusable_text = self._find_reusable_gpt_plan_on_page(page, prompt, product)
+            if reusable_text:
+                return reusable_text
+            if self._can_reuse_existing_gpt_plan(previous_text, prompt):
+                return previous_text
+
+            pre_submit_text = previous_text
+            self._send_prompt_to_gpt_page(page, prompt.strip(), attachment_paths=attachment_paths or [])
             return self._wait_for_gpt_section_plan_detection(
                 page,
-                previous_text=previous_text,
+                previous_text=pre_submit_text,
                 timeout_seconds=CHATGPT_SECTION_PLAN_WAIT_TIMEOUT_SECONDS,
             )
-
-        self._wait_for_gpt_idle(page, timeout_seconds=CHATGPT_SECTION_PLAN_WAIT_TIMEOUT_SECONDS)
-        previous_text, _ = self._latest_gpt_text(page)
-        reusable_text = self._find_reusable_gpt_plan_on_page(page, prompt, product)
-        if reusable_text:
-            return reusable_text
-        if self._can_reuse_existing_gpt_plan(previous_text, prompt):
-            return previous_text
-
-        pre_submit_text = previous_text
-        self._send_prompt_to_gpt_page(page, prompt.strip(), attachment_paths=attachment_paths or [])
-        return self._wait_for_gpt_section_plan_detection(
-            page,
-            previous_text=pre_submit_text,
-            timeout_seconds=CHATGPT_SECTION_PLAN_WAIT_TIMEOUT_SECONDS,
-        )
+        except Exception as exc:
+            lifecycle_text = str(exc).lower()
+            lifecycle_markers = (
+                "event loop is closed",
+                "is playwright already stopped",
+                "playwright already stopped",
+            )
+            if allow_retry and any(marker in lifecycle_text for marker in lifecycle_markers):
+                context = getattr(self, "_active_playwright_context", None)
+                if context is not None:
+                    fresh_page = self._ensure_chatgpt_section_planner_page_alive(context)
+                    return self._submit_section_plan_request(
+                        fresh_page,
+                        prompt,
+                        attachment_paths=attachment_paths,
+                        allow_retry=False,
+                        product=product,
+                    )
+            raise
 
     def _complete_gpt_section_plan_by_continuation(
         self,
@@ -17281,6 +17324,13 @@ class DetailPageGui(QMainWindow):
         ]
         if downloaded_images:
             return True
+        source_paths = [
+            Path(str(value))
+            for value in payload.get("source_image_paths", [])
+            if str(value).strip() and "page_capture" not in str(value).lower()
+        ]
+        if any(self._is_valid_image_file(path) for path in source_paths):
+            return True
         if len(image_urls) < 2 or len(text) < 200:
             return False
         product_signal_text = f"{title} {text}".lower()
@@ -17424,21 +17474,34 @@ class DetailPageGui(QMainWindow):
             return []
         raw_urls: list[str] = []
         patterns = (
-            r"https?:\\?/\\?/[^'\"<>\s)]+?(?:jpg|jpeg|png|webp)(?:_[^'\"<>\s)]*)?",
-            r"//[^'\"<>\s)]+?(?:jpg|jpeg|png|webp)(?:_[^'\"<>\s)]*)?",
+            r"https?:\\?/\\?/[^'\"<>\s)]+?(?:jpg|jpeg|png|gif|webp|bmp|avif)(?:_[^'\"<>\s)]*)?",
+            r"//[^'\"<>\s)]+?(?:jpg|jpeg|png|gif|webp|bmp|avif)(?:_[^'\"<>\s)]*)?",
         )
         for pattern in patterns:
             raw_urls.extend(re.findall(pattern, page_html, flags=re.IGNORECASE))
         image_urls: list[str] = []
         seen: set[str] = set()
+        rejected_tokens = (
+            "sprite",
+            "favicon",
+            "icon",
+            "avatar",
+            "placeholder",
+            "captcha",
+            "qrcode",
+            "qr-code",
+            "loading",
+        )
         for raw in raw_urls:
             cleaned = html.unescape(raw).replace("\\/", "/").strip()
             cleaned = urllib.parse.unquote(cleaned).rstrip("\\\"' ),;")
             if cleaned.startswith("//"):
                 cleaned = "https:" + cleaned
             cleaned = urllib.parse.urljoin(page_url, cleaned)
-            lower = cleaned.lower()
-            if not any(host in lower for host in ("alicdn.com", "1688.com", "taobao.com", "ownerclan.com", "speedgabia.com")):
+            parsed = urllib.parse.urlparse(cleaned)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
+            if any(token in cleaned.lower() for token in rejected_tokens):
                 continue
             if cleaned in seen:
                 continue
@@ -17452,10 +17515,32 @@ class DetailPageGui(QMainWindow):
         image_urls: list[str],
     ) -> list[dict[str, str | int]]:
         records: list[dict[str, str | int]] = []
+        rejected_tokens = (
+            "sprite",
+            "favicon",
+            "icon",
+            "avatar",
+            "placeholder",
+            "captcha",
+            "qrcode",
+            "qr-code",
+            "loading",
+        )
+
+        def usable_source(src: str) -> bool:
+            if not src:
+                return False
+            try:
+                parsed = urllib.parse.urlparse(src)
+            except Exception:
+                return False
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                return False
+            return not any(token in src.lower() for token in rejected_tokens)
+
         for item in image_candidates:
             src = str(item.get("src") or "")
-            lower = src.lower()
-            if not src or not any(host in lower for host in ("alicdn.com", "1688.com", "taobao.com")):
+            if not usable_source(src):
                 continue
             width = int(item.get("width") or 0)
             height = int(item.get("height") or 0)
@@ -17467,13 +17552,13 @@ class DetailPageGui(QMainWindow):
             record["role"] = "1688"
             records.append(record)
         for src in image_urls:
-            lower = src.lower()
-            if not any(host in lower for host in ("alicdn.com", "1688.com", "taobao.com")):
+            src = str(src or "").strip()
+            if not usable_source(src):
                 continue
             records.append(
                 {
                     "src": src,
-                    "alt": "1688",
+                    "alt": "source product image",
                     "width": 0,
                     "height": 0,
                     "client_width": 0,
@@ -17961,8 +18046,8 @@ class DetailPageGui(QMainWindow):
             return []
         raw_urls: list[str] = []
         patterns = (
-            r"https?:\\?/\\?/[^'\"<>\s)]+?\.(?:jpg|jpeg|png|webp)",
-            r"//[^'\"<>\s)]+?\.(?:jpg|jpeg|png|webp)",
+            r"https?:\\?/\\?/[^'\"<>\s)]+?\.(?:jpg|jpeg|png|gif|webp|bmp|avif)(?:\?[^'\"<>\s)]*)?",
+            r"//[^'\"<>\s)]+?\.(?:jpg|jpeg|png|gif|webp|bmp|avif)(?:\?[^'\"<>\s)]*)?",
             r"https?:\\?/\\?/[^'\"<>\s)]+?/upload/item/[^'\"<>\s)]+(?:\?hash=[^'\"<>\s)]*)?",
             r"//[^'\"<>\s)]+?/upload/item/[^'\"<>\s)]+(?:\?hash=[^'\"<>\s)]*)?",
         )
@@ -17978,24 +18063,21 @@ class DetailPageGui(QMainWindow):
             if cleaned.startswith("//"):
                 cleaned = "https:" + cleaned
             cleaned = urllib.parse.urljoin(page_url, cleaned)
+            parsed = urllib.parse.urlparse(cleaned)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                continue
             lower = cleaned.lower()
-            if self._is_ownerclan_ui_image_src(lower):
-                continue
-            if not any(
-                host in lower
-                for host in (
-                    "speedgabia.com",
-                    "image.ownerclan.com/external",
-                    "ownerclan.com",
-                    "domeggook.com/upload/item",
-                    "domeggook.com/upload/editor",
-                    "hgodo.com",
-                )
-            ):
-                continue
             if any(
                 marker in lower
                 for marker in (
+                    "sprite",
+                    "favicon",
+                    "avatar",
+                    "placeholder",
+                    "captcha",
+                    "qrcode",
+                    "qr-code",
+                    "loading",
                     "recommend",
                     "popular",
                     "banner",
@@ -18010,7 +18092,7 @@ class DetailPageGui(QMainWindow):
                 )
             ):
                 continue
-            parsed_path = urllib.parse.urlparse(cleaned).path
+            parsed_path = parsed.path
             ext = Path(parsed_path).suffix.lower()
             is_domeggook_item_image = (
                 "domeggook.com/upload/item" in lower
@@ -18032,7 +18114,7 @@ class DetailPageGui(QMainWindow):
                     )
                 )
             )
-            if ext not in {".jpg", ".jpeg", ".png", ".webp"} and not is_domeggook_item_image:
+            if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"} and not is_domeggook_item_image and "/upload/item/" not in parsed_path.lower():
                 continue
             filename_key = Path(parsed_path).name.lower()
             if re.search(r"_stt_(?:150|330)\.(?:jpg|jpeg|png|webp)$", filename_key, flags=re.IGNORECASE):
@@ -18047,22 +18129,28 @@ class DetailPageGui(QMainWindow):
         src = str(record.get("src") or "")
         src_lower = src.lower()
         chain = str(record.get("parent_chain") or "").lower()
-        if self._is_ownerclan_ui_image_src(src):
+        if self._is_ownerclan_ui_image_src(src) or self._looks_like_recommendation_image(record):
             return False
-        if self._looks_like_recommendation_image(record):
-            return False
-        detail_markers = (
-            "linfoviewitemcontents",
-            "itemcontents",
-            "item_contents",
-            "product_detail",
-            "detail",
-            "contents",
-            "editor",
-        )
-        if not any(marker in chain or marker in src_lower for marker in detail_markers):
-            return False
-        if any(marker in src_lower for marker in ("notice", "delivery", "return", "cscenter", "membership", "banner", "logo")):
+        if any(
+            marker in src_lower or marker in chain
+            for marker in (
+                "sprite",
+                "favicon",
+                "avatar",
+                "placeholder",
+                "captcha",
+                "qrcode",
+                "qr-code",
+                "loading",
+                "notice",
+                "delivery",
+                "return",
+                "cscenter",
+                "membership",
+                "banner",
+                "review",
+            )
+        ):
             return False
         width = int(record.get("width") or 0)
         height = int(record.get("height") or 0)
@@ -18070,16 +18158,7 @@ class DetailPageGui(QMainWindow):
         client_height = int(record.get("client_height") or 0)
         if max(width, client_width) < 500 or max(height, client_height) < 300:
             return False
-        if not any(
-            host in src_lower
-            for host in (
-                "ownerclan.com",
-                "domeggook.com",
-                "speedgabia.com",
-                "hgodo.com",
-                "shop-phinf.pstatic.net",
-            )
-        ):
+        if int(record.get("top") or 0) > 9000:
             return False
         return True
 
@@ -18105,30 +18184,38 @@ class DetailPageGui(QMainWindow):
         client_width = int(record.get("client_width") or 0)
         client_height = int(record.get("client_height") or 0)
         top = int(record.get("top") or 0)
-        if self._is_ownerclan_ui_image_src(src):
+        lower = src.lower()
+        if self._is_ownerclan_ui_image_src(src) or self._looks_like_recommendation_image(record):
             return False
-        if self._looks_like_recommendation_image(record):
-            return False
-        if "detail_box5" in chain or "popular" in chain or "recommend" in chain:
-            return False
-        if not any(
-            host in src.lower()
-            for host in (
-                "cdn.ownerclan.com",
-                "image.ownerclan.com",
-                "speedgabia.com",
-                "domeggook.com/upload/item",
+        if any(
+            marker in lower or marker in chain
+            for marker in (
+                "sprite",
+                "favicon",
+                "avatar",
+                "placeholder",
+                "captcha",
+                "qrcode",
+                "qr-code",
+                "loading",
+                "banner",
+                "review",
+                "membership",
+                "notice",
+                "delivery",
+                "return",
+                "cscenter",
             )
         ):
             return False
-        if width < 320 or height < 320:
+        if max(width, client_width) < 320 or max(height, client_height) < 320:
             return False
-        if height / max(1, width) > 1.8:
+        if max(height, client_height) / max(1, max(width, client_width)) > 1.8:
             return False
-        if top > 1800 and "showimage" not in chain and "product_information" not in chain:
+        if top > 1800 and not any(marker in chain for marker in ("showimage", "product_information", "product", "goods", "item")):
             return False
         visible_area = client_width * client_height
-        if visible_area == 0 and "showimage" not in chain and top > 0:
+        if visible_area == 0 and not any(marker in chain for marker in ("showimage", "product_information", "product", "goods", "item")) and top > 0:
             return False
         return True
 
@@ -18148,20 +18235,39 @@ class DetailPageGui(QMainWindow):
         src = str(record.get("src") or "")
         src_lower = src.lower()
         chain = str(record.get("parent_chain") or "").lower()
-        if self._is_ownerclan_ui_image_src(src):
+        if self._is_ownerclan_ui_image_src(src) or self._looks_like_recommendation_image(record):
             return False
-        if self._looks_like_recommendation_image(record):
+        if any(
+            marker in src_lower or marker in chain
+            for marker in (
+                "sprite",
+                "favicon",
+                "avatar",
+                "placeholder",
+                "captcha",
+                "qrcode",
+                "qr-code",
+                "loading",
+                "banner",
+                "review",
+                "membership",
+                "notice",
+                "delivery",
+                "return",
+                "cscenter",
+            )
+        ):
             return False
         width = int(record.get("width") or 0)
         height = int(record.get("height") or 0)
         client_width = int(record.get("client_width") or 0)
         client_height = int(record.get("client_height") or 0)
         top = int(record.get("top") or 0)
-        if "lthumb" in chain or "mainthumb" in chain:
-            return width >= 300 and height >= 300 and max(client_width, client_height) >= 300 and top < 1400
-        if "/marketize/" not in src_lower:
+        if top >= 1600:
             return False
-        return width >= 300 and height >= 300 and client_width >= 300 and client_height >= 300 and top < 1100
+        if "lthumb" in chain or "mainthumb" in chain:
+            return max(width, client_width) >= 300 and max(height, client_height) >= 300
+        return max(width, client_width) >= 300 and max(height, client_height) >= 300 and top < 1200
 
     def _extract_json_payload(self, result_text: str) -> dict:
         fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", result_text, flags=re.DOTALL | re.IGNORECASE)
